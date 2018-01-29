@@ -21,7 +21,22 @@ library
                      , bytestring
                      , containers
                      , cryptonite
-                     , memory
+  ghc-options:         -Wall
+  default-language:    Haskell2010
+
+test-suite zkboo-hs-test
+  type:                exitcode-stdio-1.0
+  hs-source-dirs:      test
+  main-is:             Spec.hs
+  other-modules:
+  build-depends:       base
+                     , cryptonite
+                     , hedgehog
+                     , tasty >= 1.0
+                     , tasty-hunit
+                     , tasty-hedgehog
+                     , zkboo-hs
+  ghc-options:         -Wall
   default-language:    Haskell2010
 
 source-repository head

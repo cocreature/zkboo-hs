@@ -1,6 +1,11 @@
 {-# LANGUAGE BangPatterns #-}
 module Crypto.ZKBoo
-  (
+  ( GateId(..)
+  , Expr(..)
+  , Circuit(..)
+  , View(..)
+  , eval
+  , output
   ) where
 
 import           Control.Monad
@@ -43,15 +48,15 @@ data View f gen = View
   }
 
 insert :: GateId -> f -> View f gen -> View f gen
-insert i f (View m g g') = View (Map.insert i f m) g g'
+insert i v (View m g g') = View (Map.insert i v m) g g'
 
 (!) :: View f gen -> GateId -> f
 (!) (View m _ _) i = m Map.! i
 
 getRandomElement :: (DRG gen, RandomElement f) => View f gen -> (f, View f gen)
-getRandomElement (View vs originalGen gen) =
-  case withDRG gen randomElement of
-    (f, gen') -> (f, View vs originalGen gen')
+getRandomElement (View vs og g) =
+  case withDRG g randomElement of
+    (v, g') -> (v, View vs og g')
 
 f :: (DRG gen, Num f, RandomElement f) => GateId -> Expr f -> View f gen -> View f gen -> (View f gen, View f gen)
 f i (AddConst a alpha)  wi wi1 = (insert i (wi ! a + alpha)  wi, wi1)
@@ -67,13 +72,6 @@ f i (Mult a b)          wi wi1 =
             ri - ri1
       in (insert i v wi', wi1')
 
-output :: Num f => [GateId] -> View f gen -> View f gen -> View f gen -> [f]
-output outputs w0 w1 w2 =
-  let o1 = map (w0 !) outputs
-      o2 = map (w1 !) outputs
-      o3 = map (w2 !) outputs
-  in zipWith3 (\x y z -> x + y + z) o1 o2 o3
-
 step :: (DRG gen, Num f, RandomElement f)
      => GateId -> Expr f -> View f gen -> View f gen -> View f gen -> (View f gen, View f gen, View f gen)
 step i gate w0 w1 w2 =
@@ -82,14 +80,21 @@ step i gate w0 w1 w2 =
       (w1'', w2') -> case f i gate w2' w0' of
         (w2'', w0'') -> (w0'', w1'', w2'')
 
+output :: Num f => [GateId] -> View f gen -> View f gen -> View f gen -> [f]
+output os w0 w1 w2 =
+  let o1 = map (w0 !) os
+      o2 = map (w1 !) os
+      o3 = map (w2 !) os
+  in zipWith3 (\x y z -> x + y + z) o1 o2 o3
+
 eval :: (DRG gen, Num f, RandomElement f) => Circuit f -> [f] -> gen -> gen -> gen -> (View f gen, View f gen, View f gen)
-eval (Circuit inputs outputs assignments) inputValues g0 g1 g2 =
+eval circuit inputValues g0 g1 g2 =
   let (i0, g0') = withDRG g0 randomInputs
       (i1, g1') = withDRG g1 randomInputs
       i2 = zipWith3 (\x y z -> x - y - z) inputValues i0 i1
-      v0 = View (Map.fromList (zip inputs i0)) g0' g0'
-      v1 = View (Map.fromList (zip inputs i1)) g1' g1'
-      v2 = View (Map.fromList (zip inputs i2)) g2 g2
-  in foldl' (\(!v0, !v1, !v2) (i, g) -> step i g v0 v1 v2) (v0, v1, v2) assignments
+      v0 = View (Map.fromList (zip (inputs circuit) i0)) g0' g0'
+      v1 = View (Map.fromList (zip (inputs circuit) i1)) g1' g1'
+      v2 = View (Map.fromList (zip (inputs circuit) i2)) g2 g2
+  in foldl' (\(!v0', !v1', !v2') (i, g) -> step i g v0' v1' v2') (v0, v1, v2) (assignments circuit)
   where randomInputs :: (MonadRandom m, RandomElement f) => m [f]
-        randomInputs = replicateM (length inputs) randomElement
+        randomInputs = replicateM (length (inputs circuit)) randomElement
