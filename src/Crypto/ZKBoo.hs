@@ -7,6 +7,8 @@ module Crypto.ZKBoo
   , decomposeEval
   , eval
   , output
+  , ViewCommitment(..)
+  , Commitment(..)
   ) where
 
 import           Control.Monad
@@ -14,6 +16,7 @@ import           Crypto.Random
 import           Data.List (foldl')
 import           Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
+import           Data.Monoid
 
 import           Crypto.ZKBoo.Util
 
@@ -53,7 +56,8 @@ data Circuit f = Circuit
 -- values.
 data View f gen = View
   { values :: Map GateId f
-  , originalGen :: gen -- ^ We save the originalGen for convenience
+  , randomTape :: [f] -- ^ This contains the random values that have been used in reverse order.
+                      -- In particular this list is always finite.
   , gen :: gen
   }
 
@@ -74,9 +78,9 @@ insert i v (View m g g') = View (Map.insert i v m) g g'
 -- generated. If that is not intended, you need to use the new view returned
 -- by this function.
 getRandomElement :: (DRG gen, RandomElement f) => View f gen -> (f, View f gen)
-getRandomElement (View vs og g) =
+getRandomElement (View vs tape g) =
   case withDRG g randomElement of
-    (v, g') -> (v, View vs og g')
+    (v, g') -> (v, View vs (v : tape) g')
 
 -- | @evalGateForView gateId expr wi wi1@ evaluates the gate described by
 -- @expr@ using @wi@ and its right neighbor @wi1@. The result is inserted
@@ -136,9 +140,9 @@ decomposeEval circuit inputValues (g0, g1, g2) =
   let (i0, g0') = withDRG g0 randomInputs
       (i1, g1') = withDRG g1 randomInputs
       i2 = zipWith3 (\x y z -> x - y - z) inputValues i0 i1
-      v0 = View (Map.fromList (zip (inputs circuit) i0)) g0' g0'
-      v1 = View (Map.fromList (zip (inputs circuit) i1)) g1' g1'
-      v2 = View (Map.fromList (zip (inputs circuit) i2)) g2 g2
+      v0 = View (Map.fromList (zip (inputs circuit) i0)) [] g0'
+      v1 = View (Map.fromList (zip (inputs circuit) i1)) [] g1'
+      v2 = View (Map.fromList (zip (inputs circuit) i2)) [] g2
   in evalGates (assignments circuit) (v0, v1, v2)
   where randomInputs :: (MonadRandom m, RandomElement f) => m [f]
         randomInputs = replicateM (length (inputs circuit)) randomElement
@@ -156,3 +160,21 @@ eval circuit inputValues =
           MultConst a alpha -> Map.insert i (m' Map.! a * alpha)      m'
           Add a b           -> Map.insert i (m' Map.! a + m' Map.! b) m'
           Mult a b          -> Map.insert i (m' Map.! a * m' Map.! b) m'
+
+-- | A commitment for a single view
+data ViewCommitment c f = ViewCommitment
+  { result :: [f]   -- ^ The final result computed by the circuit.
+  , commitment :: c -- ^ A commitment to a view.
+  }
+
+-- | The full commitment consisting of a commitment for each of the three views.
+data Commitment c f = Commitment
+  { commitment0 :: !(ViewCommitment c f)
+  , commitment1 :: !(ViewCommitment c f)
+  , commitment2 :: !(ViewCommitment c f)
+  }
+
+instance ToBytes f => ToBytes (View f gen) where
+  toBytesBuilder (View vs tape _) =
+    mconcat (map toBytesBuilder (Map.elems vs)) <>
+    mconcat (map toBytesBuilder tape)

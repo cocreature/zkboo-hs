@@ -6,14 +6,16 @@ module Crypto.ZKBoo.Util
   ( ZN
   , RandomElement(..)
   , randomNumber
+  , ToBytes(..)
   ) where
 
-import Crypto.Number.Basic (numBytes)
-import Crypto.Number.Serialize (os2ip)
-import Crypto.Random
-import Data.ByteString (ByteString)
-import Data.Proxy
-import GHC.TypeLits
+import           Crypto.Number.Basic (numBytes)
+import           Crypto.Number.Serialize (os2ip)
+import           Crypto.Random
+import           Data.ByteString (ByteString)
+import qualified ByteString.StrictBuilder as ByteString
+import           Data.Proxy
+import           GHC.TypeLits
 
 
 -- | Generate a random number in range [0, n).
@@ -52,8 +54,19 @@ instance KnownNat n => Num (ZN n) where
 instance KnownNat n => RandomElement (ZN n) where
   randomElement = ZN <$> randomNumber (natVal (Proxy :: Proxy n))
 
-
+-- | Class for types from which elements can be drawn uniformly at random.
 class RandomElement f where
   -- | This should give back an element selected uniformly at random from all values of type 'f'.
   -- Instances should thus only be created for types with a finite number of inhabitants.
   randomElement :: MonadRandom m => m f
+
+-- | Class for types whose elements can be converted to fixed-length byte strings.
+class ToBytes f where
+  -- | Convert an element to 'ByteString.Builder'. The length must be independent of the element.
+  toBytesBuilder :: f -> ByteString.Builder
+  toBytesBuilder = ByteString.bytes . toBytes
+  -- | Convert an element to a 'ByteString'. The length must be independent of the element
+  --
+  -- Note that in most cases it is more efficient to implement 'toBytesBuilder' instead.
+  toBytes :: f -> ByteString
+  toBytes = ByteString.builderBytes . toBytesBuilder
