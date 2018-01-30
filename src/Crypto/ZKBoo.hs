@@ -60,27 +60,26 @@ getRandomElement (View vs og g) =
   case withDRG g randomElement of
     (v, g') -> (v, View vs og g')
 
-f :: (DRG gen, Num f, RandomElement f) => GateId -> Expr f -> View f gen -> View f gen -> (View f gen, View f gen)
-f i (AddConst a alpha)  wi wi1 = (insert i (wi ! a + alpha)  wi, wi1)
-f i (MultConst a alpha) wi wi1 = (insert i (wi ! a * alpha)  wi, wi1)
-f i (Add a b)           wi wi1 = (insert i (wi ! a + wi ! b) wi, wi1)
+f :: (DRG gen, Num f, RandomElement f) => GateId -> Expr f -> View f gen -> View f gen -> View f gen
+f i (AddConst a alpha)  wi _   = insert i (wi ! a + alpha)  wi
+f i (MultConst a alpha) wi _   = insert i (wi ! a * alpha)  wi
+f i (Add a b)           wi _   = insert i (wi ! a + wi ! b) wi
 f i (Mult a b)          wi wi1 =
   case (getRandomElement wi, getRandomElement wi1) of
     ((ri, wi'), (ri1, wi1')) ->
-      let v =
-            wi'  ! a * wi'  ! b +
-            wi1' ! a * wi'  ! b +
-            wi'  ! a * wi1' ! b +
-            ri - ri1
-      in (insert i v wi', wi1')
+      let v = wi'  ! a * wi'  ! b +
+              wi1' ! a * wi'  ! b +
+              wi'  ! a * wi1' ! b +
+              ri - ri1
+      in insert i v wi'
 
 step :: (DRG gen, Num f, RandomElement f)
      => GateId -> Expr f -> View f gen -> View f gen -> View f gen -> (View f gen, View f gen, View f gen)
 step i gate w0 w1 w2 =
-  case f i gate w0 w1 of
-    (w0', _) -> case f i gate w1 w2 of
-      (w1', _) -> case f i gate w2 w0 of
-        (w2', _) -> (w0', w1', w2')
+  let w0' = f i gate w0 w1
+      w1' = f i gate w1 w2
+      w2' = f i gate w2 w0
+  in (w0', w1', w2')
 
 output :: Num f => [GateId] -> View f gen -> View f gen -> View f gen -> [f]
 output os w0 w1 w2 =
