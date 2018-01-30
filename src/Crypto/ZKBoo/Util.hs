@@ -39,7 +39,7 @@ randomNumber n
 
 -- | ℤ/nℤ
 newtype ZN (n :: Nat) = ZN Integer
-  deriving (Eq, Ord)
+  deriving (Eq, Ord, Show)
 
 instance KnownNat n => Num (ZN n) where
   ZN a + ZN b = ZN ((a + b) `mod` natVal (Proxy :: Proxy n))
