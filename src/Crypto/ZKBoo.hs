@@ -10,10 +10,11 @@ module Crypto.ZKBoo
   , decomposeEval
   , eval
   , output
-  , ViewCommitment(..)
   , Commitment(..)
-  , commitView
   , commit
+  , verify
+  , ViewCommitment(..)
+  , commitView
   , serializeView
   , deserializeView
   , deserializeView'
@@ -137,14 +138,17 @@ evalGates :: (DRG gen, Num f, RandomElement f)
           => [(GateId, Expr f)] -> (View f gen, View f gen, View f gen) -> (View f gen, View f gen, View f gen)
 evalGates assgns views = foldl' (\views' (i,g) -> evalGate i g views') views assgns
 
+outputForView :: Num f => [GateId] -> View f gen -> [f]
+outputForView is w = map (w !) is
+
 -- | Given a list of output gates and the final views, return the
 -- corresponding output values.
 output :: Num f => [GateId] -> (View f gen, View f gen, View f gen) -> [f]
 output os (w0, w1, w2) =
-  let o1 = map (w0 !) os
-      o2 = map (w1 !) os
-      o3 = map (w2 !) os
-  in zipWith3 (\x y z -> x + y + z) o1 o2 o3
+  let o0 = outputForView os w0
+      o1 = outputForView os w1
+      o2 = outputForView os w2
+  in zipWith3 (\x y z -> x + y + z) o0 o1 o2
 
 -- | Evaluate a circuit using the given input values and initial values for
 -- the PRNGS and return the final views. Combine this with 'output' to get the
@@ -188,6 +192,10 @@ data Commitment f = Commitment
   , commitment2 :: !(ViewCommitment f)
   , commitmentParams :: !Pedersen.CommitParams
   }
+
+commitmentResult :: Num f => Commitment f -> [f]
+commitmentResult (Commitment c0 c1 c2 _) =
+  zipWith3 (\x y z -> x + y + z) (result c0) (result c1) (result c2)
 
 commitView :: (MonadRandom m, ToBytes f)
            => Pedersen.CommitParams -> Circuit f -> View f gen -> m (ViewCommitment f, Pedersen.Reveal)
@@ -260,3 +268,60 @@ serializedViewLength (Circuit is _ gs) =
               Mult _ _ -> True
               _ -> False)
            (map snd gs))
+
+data Challenge
+  = One
+  | Two
+  | Three
+
+data VerificationResult
+  = Success
+  | Failure String
+
+commitments :: Commitment f -> Challenge -> (ViewCommitment f, ViewCommitment f)
+commitments (Commitment c0 c1 c2 _) e =
+  case e of
+    One -> (c0, c1)
+    Two -> (c1, c2)
+    Three -> (c2, c0)
+
+consistent :: forall f. (Eq f, Num f) => Circuit f -> View f () -> View f () -> Bool
+consistent (Circuit _ _ gates) wi wi1 =
+  go gates (reverse (randomTape wi)) (reverse (randomTape wi1))
+  where go :: [(GateId, Expr f)] -> [f] -> [f] -> Bool
+        go [] [] [] = True
+        go [] (_ : _) _ = False
+        go [] _ (_ : _) = False
+        go ((i,AddConst a alpha) : gs) tapei tapei1 =
+          wi  ! i == wi  ! a + alpha &&
+          wi1 ! i == wi1 ! a + alpha &&
+          go gs tapei tapei1
+        go ((i,MultConst a alpha) : gs) tapei tapei1 =
+          wi !  i == wi  ! a * alpha &&
+          wi1 ! i == wi1 ! a * alpha &&
+          go gs tapei tapei1
+        go ((i, Add a b) : gs) tapei tapei1 =
+          wi  ! i == wi  ! a + wi  ! b &&
+          wi1 ! i == wi1 ! a + wi1 ! b &&
+          go gs tapei tapei1
+        go ((i, Mult a b) : gs) (ri : tapei) (ri1 : tapei1) =
+          let vi = wi ! a * wi ! b +
+                   wi1 ! a * wi ! b +
+                   wi ! a * wi1 ! b +
+                   ri - ri1
+          in wi ! i == vi && go gs tapei tapei1
+        go ((_, Mult _ _) : _) _ _ = False
+
+verify :: (Eq f, FromBytes f, Num f, ToBytes f)
+       => Circuit f -> [f] -> Commitment f -> Challenge -> (Pedersen.Reveal, Pedersen.Reveal) -> VerificationResult
+verify circuit y cs e (ri, ri1)
+  | commitmentResult cs /= y = Failure "Result does not match expected result."
+  | not (Pedersen.open params ci ri && Pedersen.open params ci1 ri1) = Failure "Commitments are incorrect."
+  | not (consistent circuit wi wi1) = Failure "Revealed views are not consistent"
+  | not (outputForView (outputs circuit) wi == yi &&
+         outputForView (outputs circuit) wi1 == yi1) = Failure "Commited views have different outputs"
+  | otherwise = Success
+  where (ViewCommitment yi ci, ViewCommitment yi1 ci1) = commitments cs e
+        params = commitmentParams cs
+        Parse.ParseOK _ wi = deserializeView circuit (Pedersen.revealVal ri)
+        Parse.ParseOK _ wi1 = deserializeView circuit (Pedersen.revealVal ri1)
