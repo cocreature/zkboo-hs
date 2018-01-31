@@ -22,6 +22,8 @@ library
                      , bytestring-strict-builder
                      , containers
                      , cryptonite
+                     , memory
+                     , pedersen-commitment
   ghc-options:         -Wall
   default-language:    Haskell2010
 

@@ -5,3 +5,4 @@ extra-deps:
 - tasty-1.0.0.1
 - git: https://github.com/qfpl/tasty-hedgehog.git
   commit: a1eab676c7088a09ce89a234976e89cb3a062e9c
+- pedersen-commitment-0.1.0

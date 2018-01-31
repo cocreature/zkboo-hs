@@ -1,4 +1,6 @@
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 module Crypto.ZKBoo
   ( GateId(..)
   , Expr(..)
@@ -9,14 +11,23 @@ module Crypto.ZKBoo
   , output
   , ViewCommitment(..)
   , Commitment(..)
+  , commitView
+  , serializeView
+  , deserializeView
   ) where
 
+import qualified ByteString.StrictBuilder as ByteString
 import           Control.Monad
+import qualified Crypto.Number.Serialize as Cryptonite
 import           Crypto.Random
-import           Data.List (foldl')
+import qualified Data.ByteArray.Parse as Parse
+import           Data.ByteString (ByteString)
+import           Data.List (foldl', sort)
 import           Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import           Data.Monoid
+import           Data.Proxy
+import qualified Pedersen
 
 import           Crypto.ZKBoo.Util
 
@@ -162,19 +173,53 @@ eval circuit inputValues =
           Mult a b          -> Map.insert i (m' Map.! a * m' Map.! b) m'
 
 -- | A commitment for a single view
-data ViewCommitment c f = ViewCommitment
+data ViewCommitment f = ViewCommitment
   { result :: [f]   -- ^ The final result computed by the circuit.
-  , commitment :: c -- ^ A commitment to a view.
+  , commitment :: !Pedersen.Commitment -- ^ A commitment to a view including the random tape.
   }
 
 -- | The full commitment consisting of a commitment for each of the three views.
-data Commitment c f = Commitment
-  { commitment0 :: !(ViewCommitment c f)
-  , commitment1 :: !(ViewCommitment c f)
-  , commitment2 :: !(ViewCommitment c f)
+data Commitment f = Commitment
+  { commitment0 :: !(ViewCommitment f)
+  , commitment1 :: !(ViewCommitment f)
+  , commitment2 :: !(ViewCommitment f)
+  , commitmentParams :: !Pedersen.CommitParams
   }
 
-instance ToBytes f => ToBytes (View f gen) where
-  toBytesBuilder (View vs tape _) =
-    mconcat (map toBytesBuilder (Map.elems vs)) <>
-    mconcat (map toBytesBuilder tape)
+commitView :: (MonadRandom m, ToBytes f)
+           => Pedersen.CommitParams -> Circuit f -> View f gen -> m (ViewCommitment f, Pedersen.Reveal)
+commitView params circuit view = do
+  Pedersen.Pedersen com rev <-
+    Pedersen.commit (Cryptonite.os2ip serializedView) params
+  pure (ViewCommitment y com, rev)
+  where
+    serializedView = ByteString.builderBytes (serializeView view)
+    y = map (view !) (outputs circuit)
+
+serializeView :: ToBytes f => View f gen -> ByteString.Builder
+serializeView (View vs tape _) =
+  mconcat (map toBytesBuilder (Map.elems vs)) <>
+  mconcat (map toBytesBuilder tape)
+
+deserializeView :: forall f. (FromBytes f, ToBytes f)
+                => Circuit f -> ByteString -> Parse.Result ByteString (View f ())
+deserializeView (Circuit is _ gs) =
+  Parse.parse $ do
+    mapElems <-
+      replicateM
+        (length mapKeys)
+        (fromBytes <$> Parse.take (byteLength (Proxy :: Proxy f)))
+    tape <-
+      replicateM
+        lengthRandomTape
+        (fromBytes <$> Parse.take (byteLength (Proxy :: Proxy f)))
+    pure (View (Map.fromList (zip mapKeys mapElems)) tape ())
+  where
+    mapKeys = sort (is <> map fst gs)
+    lengthRandomTape =
+      length
+        (filter
+           (\case
+              Mult _ _ -> True
+              _ -> False)
+           (map snd gs))

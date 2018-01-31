@@ -6,6 +6,7 @@ module Crypto.ZKBoo.Util
   ( ZN
   , RandomElement(..)
   , randomNumber
+  , FromBytes(..)
   , ToBytes(..)
   ) where
 
@@ -70,3 +71,9 @@ class ToBytes f where
   -- Note that in most cases it is more efficient to implement 'toBytesBuilder' instead.
   toBytes :: f -> ByteString
   toBytes = ByteString.builderBytes . toBytesBuilder
+  -- | The length in bytes
+  byteLength :: proxy f -> Int
+
+-- | Class for types whose elemnts can be deserialized from fixed-length byte strings.
+class FromBytes f where
+  fromBytes :: ByteString -> f
