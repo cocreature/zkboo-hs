@@ -1,6 +1,7 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+import           Crypto.Number.Serialize (os2ip)
 import           Data.Proxy
 import           Control.Monad
 import           GHC.TypeLits
@@ -25,6 +26,7 @@ main =
     "tasty-hedgehog tests"
     [ testProperty "decompose" prop_decompose_eval_equivalent
     , testProperty "roundtrip view" prop_roundtrip_view
+    , testProperty "roundtrip view via integer" prop_roundtrip_view_integer
     ]
 
 prop_decompose_eval_equivalent :: Property
@@ -53,8 +55,30 @@ prop_roundtrip_view =
   where
     roundtrip circuit v =
       let v' = () <$ v
-      in case deserializeView circuit (ByteString.builderBytes (serializeView v')) of
+      in case deserializeView' circuit (ByteString.builderBytes (serializeView v')) of
            Parse.ParseOK bs v'' -> assert (ByteString.null bs && v' == v'')
+           Parse.ParseFail s -> footnote s *> failure
+           Parse.ParseMore _ -> footnote "parser expects more input" *> failure
+
+prop_roundtrip_view_integer :: Property
+prop_roundtrip_view_integer =
+  property $ do
+    circuit <- forAll (genCircuit genZN :: Gen (Circuit (ZN 2)))
+    inputValues <- forAll (replicateM (length (inputs circuit)) genZN)
+    g0 <- drgNewSeed . seedFromInteger <$> forAll (Gen.integral (Range.linear 1 (10 ^ (6 :: Int))))
+    g1 <- drgNewSeed . seedFromInteger <$> forAll (Gen.integral (Range.linear 1 (10 ^ (6 :: Int))))
+    g2 <- drgNewSeed . seedFromInteger <$> forAll (Gen.integral (Range.linear 1 (10 ^ (6 :: Int))))
+    let (v0, v1, v2) = decomposeEval circuit inputValues (g0, g1, g2)
+    roundtrip circuit v0
+    roundtrip circuit v1
+    roundtrip circuit v2
+  where
+    roundtrip circuit v =
+      let v' = () <$ v
+          bs = ByteString.builderBytes (serializeView v')
+          i = os2ip bs
+      in case deserializeView circuit i of
+           Parse.ParseOK bs' v'' -> assert (ByteString.null bs' && v' == v'')
            Parse.ParseFail s -> footnote s *> failure
            Parse.ParseMore _ -> footnote "parser expects more input" *> failure
 

@@ -16,6 +16,7 @@ module Crypto.ZKBoo
   , commit
   , serializeView
   , deserializeView
+  , deserializeView'
   ) where
 
 import qualified ByteString.StrictBuilder as ByteString
@@ -207,14 +208,17 @@ commit params circuit (w0, w1, w2) = do
   (c2, r2) <- commitView params circuit w2
   pure (Commitment c0 c1 c2 params, (r0, r1, r2))
 
+-- | Serialize a view into a 'ByteString.Builder'.
 serializeView :: ToBytes f => View f gen -> ByteString.Builder
 serializeView (View vs tape _) =
   mconcat (map toBytesBuilder (Map.elems vs)) <>
   mconcat (map toBytesBuilder tape)
 
-deserializeView :: forall f. (FromBytes f, ToBytes f)
+-- | Deserialize a view from a 'ByteString'. The 'ByteString' should be
+-- of the format produced by 'serializeView'.
+deserializeView' :: forall f. (FromBytes f, ToBytes f)
                 => Circuit f -> ByteString -> Parse.Result ByteString (View f ())
-deserializeView (Circuit is _ gs) =
+deserializeView' (Circuit is _ gs) =
   Parse.parse $ do
     mapElems <-
       replicateM
@@ -228,6 +232,28 @@ deserializeView (Circuit is _ gs) =
   where
     mapKeys = sort (is <> map fst gs)
     lengthRandomTape =
+      length
+        (filter
+           (\case
+              Mult _ _ -> True
+              _ -> False)
+           (map snd gs))
+
+-- | Deserialize a view from an 'Integer'. The integer is expected to
+-- represent a 'ByteString' and should be produced using 'Cryptonite.os2ip'.
+deserializeView :: forall f. (FromBytes f, ToBytes f)
+                => Circuit f -> Integer -> Parse.Result ByteString (View f ())
+deserializeView circuit i =
+  deserializeView' circuit (Cryptonite.i2ospOf_ (serializedViewLength circuit) i)
+
+-- | The length of a serialized view for this circuit in bytes. This
+-- is useful for getting the correct zero-padding when converting
+-- between bytestrings and integers.
+serializedViewLength :: forall f. ToBytes f => Circuit f -> Int
+serializedViewLength (Circuit is _ gs) =
+  byteLength (Proxy :: Proxy f) * (length is + length gs + multGates)
+  where
+    multGates =
       length
         (filter
            (\case
