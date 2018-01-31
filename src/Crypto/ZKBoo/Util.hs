@@ -11,7 +11,7 @@ module Crypto.ZKBoo.Util
   ) where
 
 import           Crypto.Number.Basic (numBytes)
-import           Crypto.Number.Serialize (os2ip)
+import           Crypto.Number.Serialize (os2ip, i2ospOf_)
 import           Crypto.Random
 import           Data.ByteString (ByteString)
 import qualified ByteString.StrictBuilder as ByteString
@@ -44,6 +44,7 @@ randomNumber n
 newtype ZN (n :: Nat) = ZN Integer
   deriving (Eq, Ord, Show)
 
+
 instance KnownNat n => Num (ZN n) where
   ZN a + ZN b = ZN ((a + b) `mod` natVal (Proxy :: Proxy n))
   ZN a - ZN b = ZN ((a - b) `mod` natVal (Proxy :: Proxy n))
@@ -54,6 +55,13 @@ instance KnownNat n => Num (ZN n) where
 
 instance KnownNat n => RandomElement (ZN n) where
   randomElement = ZN <$> randomNumber (natVal (Proxy :: Proxy n))
+
+instance KnownNat n => ToBytes (ZN n) where
+  toBytes (ZN i) = i2ospOf_ (numBytes (natVal (Proxy :: Proxy n))) i
+  byteLength _ = numBytes (fromIntegral (natVal (Proxy :: Proxy n)))
+
+instance FromBytes (ZN n) where
+  fromBytes bs = ZN (os2ip bs)
 
 -- | Class for types from which elements can be drawn uniformly at random.
 class RandomElement f where

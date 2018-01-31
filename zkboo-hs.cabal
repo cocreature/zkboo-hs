@@ -33,8 +33,11 @@ test-suite zkboo-hs-test
   main-is:             Spec.hs
   other-modules:
   build-depends:       base
+                     , bytestring
+                     , bytestring-strict-builder
                      , cryptonite
                      , hedgehog
+                     , memory
                      , tasty >= 1.0
                      , tasty-hunit
                      , tasty-hedgehog

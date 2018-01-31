@@ -1,4 +1,5 @@
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 module Crypto.ZKBoo
@@ -12,6 +13,7 @@ module Crypto.ZKBoo
   , ViewCommitment(..)
   , Commitment(..)
   , commitView
+  , commit
   , serializeView
   , deserializeView
   ) where
@@ -70,7 +72,7 @@ data View f gen = View
   , randomTape :: [f] -- ^ This contains the random values that have been used in reverse order.
                       -- In particular this list is always finite.
   , gen :: gen
-  }
+  } deriving (Eq, Functor, Show)
 
 -- | Insert a value for 'GateId' into the view.
 insert :: GateId -> f -> View f gen -> View f gen
@@ -195,6 +197,15 @@ commitView params circuit view = do
   where
     serializedView = ByteString.builderBytes (serializeView view)
     y = map (view !) (outputs circuit)
+
+commit :: (MonadRandom m, ToBytes f)
+       => Pedersen.CommitParams -> Circuit f -> (View f gen, View f gen, View f gen)
+       -> m (Commitment f, (Pedersen.Reveal, Pedersen.Reveal, Pedersen.Reveal))
+commit params circuit (w0, w1, w2) = do
+  (c0, r0) <- commitView params circuit w0
+  (c1, r1) <- commitView params circuit w1
+  (c2, r2) <- commitView params circuit w2
+  pure (Commitment c0 c1 c2 params, (r0, r1, r2))
 
 serializeView :: ToBytes f => View f gen -> ByteString.Builder
 serializeView (View vs tape _) =
