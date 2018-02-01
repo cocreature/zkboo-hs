@@ -38,6 +38,7 @@ test-suite zkboo-hs-test
                      , cryptonite
                      , hedgehog
                      , memory
+                     , pedersen-commitment
                      , tasty >= 1.0
                      , tasty-hunit
                      , tasty-hedgehog

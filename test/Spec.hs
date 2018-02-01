@@ -1,20 +1,22 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-import           Crypto.Number.Serialize (os2ip)
-import           Data.Proxy
+import qualified ByteString.StrictBuilder as ByteString
 import           Control.Monad
-import           GHC.TypeLits
+import           Crypto.Number.Serialize (os2ip)
 import           Crypto.Random
+import qualified Data.ByteArray.Parse as Parse
+import qualified Data.ByteString as ByteString
+import           Data.Proxy
 import           Data.Traversable
+import           Data.Word
+import           GHC.TypeLits
 import           Hedgehog hiding (eval)
 import qualified Hedgehog.Gen as Gen
 import qualified Hedgehog.Range as Range
+import qualified Pedersen
 import           Test.Tasty
 import           Test.Tasty.Hedgehog
-import qualified Data.ByteString as ByteString
-import qualified ByteString.StrictBuilder as ByteString
-import qualified Data.ByteArray.Parse as Parse
 
 import           Crypto.ZKBoo
 import           Crypto.ZKBoo.Util
@@ -27,6 +29,8 @@ main =
     [ testProperty "decompose" prop_decompose_eval_equivalent
     , testProperty "roundtrip view" prop_roundtrip_view
     , testProperty "roundtrip view via integer" prop_roundtrip_view_integer
+    , testProperty "schema works for a single round" prop_single_round
+    , testProperty "verification fails for different result" prop_single_round_incorrect_result
     ]
 
 prop_decompose_eval_equivalent :: Property
@@ -34,9 +38,9 @@ prop_decompose_eval_equivalent =
   property $ do
     circuit <- forAll (genCircuit genZN :: Gen (Circuit (ZN 2)))
     inputValues <- forAll (replicateM (length (inputs circuit)) genZN)
-    g0 <- drgNewSeed . seedFromInteger <$> forAll (Gen.integral (Range.linear 1 (10 ^ (6 :: Int))))
-    g1 <- drgNewSeed . seedFromInteger <$> forAll (Gen.integral (Range.linear 1 (10 ^ (6 :: Int))))
-    g2 <- drgNewSeed . seedFromInteger <$> forAll (Gen.integral (Range.linear 1 (10 ^ (6 :: Int))))
+    g0 <- drgNewTest <$> forAll genSeed
+    g1 <- drgNewTest <$> forAll genSeed
+    g2 <- drgNewTest <$> forAll genSeed
     let views = decomposeEval circuit inputValues (g0, g1, g2)
     eval circuit inputValues === output (outputs circuit) views
 
@@ -45,9 +49,9 @@ prop_roundtrip_view =
   property $ do
     circuit <- forAll (genCircuit genZN :: Gen (Circuit (ZN 2)))
     inputValues <- forAll (replicateM (length (inputs circuit)) genZN)
-    g0 <- drgNewSeed . seedFromInteger <$> forAll (Gen.integral (Range.linear 1 (10 ^ (6 :: Int))))
-    g1 <- drgNewSeed . seedFromInteger <$> forAll (Gen.integral (Range.linear 1 (10 ^ (6 :: Int))))
-    g2 <- drgNewSeed . seedFromInteger <$> forAll (Gen.integral (Range.linear 1 (10 ^ (6 :: Int))))
+    g0 <- drgNewTest <$> forAll genSeed
+    g1 <- drgNewTest <$> forAll genSeed
+    g2 <- drgNewTest <$> forAll genSeed
     let (v0, v1, v2) = decomposeEval circuit inputValues (g0, g1, g2)
     roundtrip circuit v0
     roundtrip circuit v1
@@ -65,9 +69,9 @@ prop_roundtrip_view_integer =
   property $ do
     circuit <- forAll (genCircuit genZN :: Gen (Circuit (ZN 2)))
     inputValues <- forAll (replicateM (length (inputs circuit)) genZN)
-    g0 <- drgNewSeed . seedFromInteger <$> forAll (Gen.integral (Range.linear 1 (10 ^ (6 :: Int))))
-    g1 <- drgNewSeed . seedFromInteger <$> forAll (Gen.integral (Range.linear 1 (10 ^ (6 :: Int))))
-    g2 <- drgNewSeed . seedFromInteger <$> forAll (Gen.integral (Range.linear 1 (10 ^ (6 :: Int))))
+    g0 <- drgNewTest <$> forAll genSeed
+    g1 <- drgNewTest <$> forAll genSeed
+    g2 <- drgNewTest <$> forAll genSeed
     let (v0, v1, v2) = decomposeEval circuit inputValues (g0, g1, g2)
     roundtrip circuit v0
     roundtrip circuit v1
@@ -81,6 +85,53 @@ prop_roundtrip_view_integer =
            Parse.ParseOK bs' v'' -> assert (ByteString.null bs' && v' == v'')
            Parse.ParseFail s -> footnote s *> failure
            Parse.ParseMore _ -> footnote "parser expects more input" *> failure
+
+genSeed :: Gen (Word64, Word64, Word64, Word64, Word64)
+genSeed = do
+  w0 <- Gen.word64 Range.constantBounded
+  w1 <- Gen.word64 Range.constantBounded
+  w2 <- Gen.word64 Range.constantBounded
+  w3 <- Gen.word64 Range.constantBounded
+  w4 <- Gen.word64 Range.constantBounded
+  pure (w0, w1, w2, w3, w4)
+
+genChallenge :: Gen Challenge
+genChallenge = Gen.element [One, Two, Three]
+
+prop_single_round :: Property
+prop_single_round =
+  property $ do
+    circuit <- forAll (genCircuit genZN :: Gen (Circuit (ZN 2)))
+    inputValues <- forAll (replicateM (length (inputs circuit)) genZN)
+    g0 <- drgNewTest <$> forAll genSeed
+    g1 <- drgNewTest <$> forAll genSeed
+    g2 <- drgNewTest <$> forAll genSeed
+    globalG <- drgNewTest <$> forAll genSeed
+    let views = decomposeEval circuit inputValues (g0, g1, g2)
+        ((_, params), globalG') = withDRG globalG (Pedersen.setup (max 6 (serializedViewLength circuit)))
+        (com, reveals) = fst $ withDRG globalG' (commit params circuit views)
+        y = eval circuit inputValues
+    e <- forAll genChallenge
+    verify circuit y com e (selectChallenge reveals e)
+      === Success
+
+prop_single_round_incorrect_result :: Property
+prop_single_round_incorrect_result =
+  property $ do
+    circuit <- forAll (genCircuit genZN :: Gen (Circuit (ZN 2)))
+    inputValues <- forAll (replicateM (length (inputs circuit)) genZN)
+    g0 <- drgNewTest <$> forAll genSeed
+    g1 <- drgNewTest <$> forAll genSeed
+    g2 <- drgNewTest <$> forAll genSeed
+    globalG <- drgNewTest <$> forAll genSeed
+    let views = decomposeEval circuit inputValues (g0, g1, g2)
+        ((_, params), globalG') = withDRG globalG (Pedersen.setup (max 6 (serializedViewLength circuit)))
+        (com, reveals) = fst $ withDRG globalG' (commit params circuit views)
+        y = eval circuit inputValues
+    y' <- forAll (Gen.filter (/= y) $ replicateM (length y) genZN)
+    e <- forAll genChallenge
+    verify circuit y' com e (selectChallenge reveals e)
+      === Failure "Result does not match expected result."
 
 genExpr :: Gen f -> Int -> Gen (Expr f)
 genExpr genF numGates =

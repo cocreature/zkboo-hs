@@ -13,11 +13,15 @@ module Crypto.ZKBoo
   , Commitment(..)
   , commit
   , verify
+  , VerificationResult(..)
+  , Challenge(..)
   , ViewCommitment(..)
   , commitView
   , serializeView
   , deserializeView
   , deserializeView'
+  , serializedViewLength
+  , selectChallenge
   ) where
 
 import qualified ByteString.StrictBuilder as ByteString
@@ -273,10 +277,12 @@ data Challenge
   = One
   | Two
   | Three
+  deriving (Eq, Show)
 
 data VerificationResult
   = Success
   | Failure String
+  deriving (Eq, Show)
 
 commitments :: Commitment f -> Challenge -> (ViewCommitment f, ViewCommitment f)
 commitments (Commitment c0 c1 c2 _) e =
@@ -325,3 +331,11 @@ verify circuit y cs e (ri, ri1)
         params = commitmentParams cs
         Parse.ParseOK _ wi = deserializeView circuit (Pedersen.revealVal ri)
         Parse.ParseOK _ wi1 = deserializeView circuit (Pedersen.revealVal ri1)
+
+-- | Select the elements corresponding to the challenge.
+selectChallenge :: (a, a, a) -> Challenge -> (a, a)
+selectChallenge (a, b, c) e =
+  case e of
+    One -> (a, b)
+    Two -> (b, c)
+    Three -> (c, a)
