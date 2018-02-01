@@ -1,5 +1,7 @@
 # zkboo-hs
 
+[![Build Status](https://img.shields.io/travis/cocreature/zkboo-hs.svg)](https://travis-ci.org/cocreature/zkboo-hs)
+
 A Haskell implementation of the [ZKBoo protocol](https://eprint.iacr.org/2016/163.pdf)
 for non-interactive zero-knowledge proofs of boolean circuits.
 
