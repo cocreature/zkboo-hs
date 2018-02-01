@@ -8,14 +8,18 @@ module Crypto.ZKBoo.Util
   , randomNumber
   , FromBytes(..)
   , ToBytes(..)
+  , word8To2bitChunks
+  , _2bitChunksToWord8
   ) where
 
+import qualified ByteString.StrictBuilder as ByteString
 import           Crypto.Number.Basic (numBytes)
 import           Crypto.Number.Serialize (os2ip, i2ospOf_)
 import           Crypto.Random
+import           Data.Bits
 import           Data.ByteString (ByteString)
-import qualified ByteString.StrictBuilder as ByteString
 import           Data.Proxy
+import           Data.Word
 import           GHC.TypeLits
 
 
@@ -85,3 +89,16 @@ class ToBytes f where
 -- | Class for types whose elemnts can be deserialized from fixed-length byte strings.
 class FromBytes f where
   fromBytes :: ByteString -> f
+
+-- TODO: Replace 'ToBytes'/'FromBytes' with 'Storable' or the classes in @binary@.
+
+word8To2bitChunks :: Word8 -> (Word8, Word8, Word8, Word8)
+word8To2bitChunks w =
+  ( (w .&. 0xc0) `shiftR` 6
+  , (w .&. 0x30) `shiftR` 4
+  , (w .&. 0xc) `shiftR` 2
+  , w .&. 0x3)
+
+_2bitChunksToWord8 :: (Word8, Word8, Word8, Word8) -> Word8
+_2bitChunksToWord8 (a, b, c, d) =
+  a `shiftL` 6 .|. b `shiftL` 4 .|. c `shiftL` 2 .|. d

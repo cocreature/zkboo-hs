@@ -7,7 +7,7 @@ license:             BSD3
 license-file:        LICENSE
 author:              Moritz Kiefer
 maintainer:          moritz.kiefer@purelyfunctional.org
-copyright:           (C) 2017 Moritz Kiefer
+copyright:           (C) 2018 Moritz Kiefer
 category:            Web
 build-type:          Simple
 extra-source-files:  README.md
@@ -17,7 +17,7 @@ library
   hs-source-dirs:      src
   exposed-modules:     Crypto.ZKBoo
                        Crypto.ZKBoo.Util
-  build-depends:       base >= 4.7 && < 5
+  build-depends:       base >= 4.10 && < 5
                      , bytestring
                      , bytestring-strict-builder
                      , containers

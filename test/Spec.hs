@@ -29,26 +29,29 @@ main =
     [ testProperty "decompose" prop_decompose_eval_equivalent
     , testProperty "roundtrip view" prop_roundtrip_view
     , testProperty "roundtrip view via integer" prop_roundtrip_view_integer
-    , testProperty "schema works for a single round" prop_single_round
-    , testProperty "verification fails for different result" prop_single_round_incorrect_result
+    , testProperty "schema works for one round" prop_round
+    , testProperty "verification fails for different result" prop_round_incorrect_result
+    , testProperty "full verification is successful" prop_full_verification
+    , testProperty "full verification fails for different output" prop_full_verification_fail
+    , testProperty "roundtrip via 2bit chunks" prop_roundtrip_word8
     ]
 
 prop_decompose_eval_equivalent :: Property
 prop_decompose_eval_equivalent =
   property $ do
     circuit <- forAll (genCircuit genZN :: Gen (Circuit (ZN 2)))
-    inputValues <- forAll (replicateM (length (inputs circuit)) genZN)
+    inputValues <- forAll (replicateM (length (circuitInputs circuit)) genZN)
     g0 <- drgNewTest <$> forAll genSeed
     g1 <- drgNewTest <$> forAll genSeed
     g2 <- drgNewTest <$> forAll genSeed
     let views = decomposeEval circuit inputValues (g0, g1, g2)
-    eval circuit inputValues === output (outputs circuit) views
+    eval circuit inputValues === calculateOutput (circuitOutputs circuit) views
 
 prop_roundtrip_view :: Property
 prop_roundtrip_view =
   property $ do
     circuit <- forAll (genCircuit genZN :: Gen (Circuit (ZN 2)))
-    inputValues <- forAll (replicateM (length (inputs circuit)) genZN)
+    inputValues <- forAll (replicateM (length (circuitInputs circuit)) genZN)
     g0 <- drgNewTest <$> forAll genSeed
     g1 <- drgNewTest <$> forAll genSeed
     g2 <- drgNewTest <$> forAll genSeed
@@ -68,7 +71,7 @@ prop_roundtrip_view_integer :: Property
 prop_roundtrip_view_integer =
   property $ do
     circuit <- forAll (genCircuit genZN :: Gen (Circuit (ZN 2)))
-    inputValues <- forAll (replicateM (length (inputs circuit)) genZN)
+    inputValues <- forAll (replicateM (length (circuitInputs circuit)) genZN)
     g0 <- drgNewTest <$> forAll genSeed
     g1 <- drgNewTest <$> forAll genSeed
     g2 <- drgNewTest <$> forAll genSeed
@@ -98,11 +101,11 @@ genSeed = do
 genChallenge :: Gen Challenge
 genChallenge = Gen.element [One, Two, Three]
 
-prop_single_round :: Property
-prop_single_round =
+prop_round :: Property
+prop_round =
   property $ do
     circuit <- forAll (genCircuit genZN :: Gen (Circuit (ZN 2)))
-    inputValues <- forAll (replicateM (length (inputs circuit)) genZN)
+    inputValues <- forAll (replicateM (length (circuitInputs circuit)) genZN)
     g0 <- drgNewTest <$> forAll genSeed
     g1 <- drgNewTest <$> forAll genSeed
     g2 <- drgNewTest <$> forAll genSeed
@@ -112,14 +115,14 @@ prop_single_round =
         (com, reveals) = fst $ withDRG globalG' (commit params circuit views)
         y = eval circuit inputValues
     e <- forAll genChallenge
-    verify circuit y com e (selectChallenge reveals e)
+    verifyRound circuit y com e (selectFor reveals e)
       === Success
 
-prop_single_round_incorrect_result :: Property
-prop_single_round_incorrect_result =
+prop_round_incorrect_result :: Property
+prop_round_incorrect_result =
   property $ do
     circuit <- forAll (genCircuit genZN :: Gen (Circuit (ZN 2)))
-    inputValues <- forAll (replicateM (length (inputs circuit)) genZN)
+    inputValues <- forAll (replicateM (length (circuitInputs circuit)) genZN)
     g0 <- drgNewTest <$> forAll genSeed
     g1 <- drgNewTest <$> forAll genSeed
     g2 <- drgNewTest <$> forAll genSeed
@@ -130,8 +133,39 @@ prop_single_round_incorrect_result =
         y = eval circuit inputValues
     y' <- forAll (Gen.filter (/= y) $ replicateM (length y) genZN)
     e <- forAll genChallenge
-    verify circuit y' com e (selectChallenge reveals e)
+    verifyRound circuit y' com e (selectFor reveals e)
       === Failure "Result does not match expected result."
+
+prop_full_verification :: Property
+prop_full_verification =
+  property $ do
+    circuit <- forAll (genCircuit genZN :: Gen (Circuit (ZN 2)))
+    inputValues <- forAll (replicateM (length (circuitInputs circuit)) genZN)
+    globalG <- drgNewTest <$> forAll genSeed
+    rounds <- forAll genRounds
+    let (proof, _) = withDRG globalG (prove rounds circuit inputValues)
+    verify proof === Success
+
+prop_full_verification_fail :: Property
+prop_full_verification_fail =
+  property $ do
+    circuit <- forAll (genCircuit genZN :: Gen (Circuit (ZN 2)))
+    inputValues <- forAll (replicateM (length (circuitInputs circuit)) genZN)
+    globalG <- drgNewTest <$> forAll genSeed
+    rounds <- forAll genRounds
+    let (proof, _) = withDRG globalG (prove rounds circuit inputValues)
+        y = eval circuit inputValues
+    y' <- forAll (Gen.filter (/= y) $ replicateM (length y) genZN)
+    verify proof { proofOutput = y' } === Failure "Could not verify proof."
+
+prop_roundtrip_word8 :: Property
+prop_roundtrip_word8 =
+  property $ do
+    w <- forAll (Gen.word8 Range.constantBounded)
+    _2bitChunksToWord8 (word8To2bitChunks w) === w
+
+genRounds :: Gen Rounds
+genRounds = Rounds <$> Gen.integral (Range.linear 10 255)
 
 genExpr :: Gen f -> Int -> Gen (Expr f)
 genExpr genF numGates =

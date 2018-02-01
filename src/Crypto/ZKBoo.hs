@@ -2,17 +2,44 @@
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-|
+Module      : Crypto.ZKBoo
+Description : Haskell implementation of the ZKBoo NIZK protocol
+Copyright   : (c) Moritz Kiefer, 2018
+License     : BSD3
+Maintainer  : moritz.kiefer@purelyfunctional.org
+
+This module provides a Haskell implementation of the
+<https://eprint.iacr.org/2016/163.pdf ZKBoo> NIZK protocol.  ZKBoo
+generates non-interactive zero-knowledge proofs for circuits
+consisting of addition and multiplication. A special case of this are
+circuits over \(\mathbb{Z}_{2}\), i.e., boolean circuits.
+
+The basic idea behind ZKBoo is to distribute the evaluation of the
+circuit over three parties. The commitments of the final views are
+sent to the verifier. The verifier then sends the challenge to the
+prover which reveals the two views specified by the challenge. To
+reduce the soundness error, multiple rounds of this protocol are
+executed. The protocol is made non-interactive by applying the
+<https://en.wikipedia.org/wiki/Fiat%E2%80%93Shamir_heuristic Fiat-Shamir heuristic>
+which draws the challenges from the hash of the commitments.
+
+-}
 module Crypto.ZKBoo
   ( GateId(..)
   , Expr(..)
   , Circuit(..)
+  , Rounds(..)
+  , prove
+  , verify
+  , Proof(..)
   , View(..)
   , decomposeEval
   , eval
-  , output
+  , calculateOutput
   , Commitment(..)
   , commit
-  , verify
+  , verifyRound
   , VerificationResult(..)
   , Challenge(..)
   , ViewCommitment(..)
@@ -21,20 +48,24 @@ module Crypto.ZKBoo
   , deserializeView
   , deserializeView'
   , serializedViewLength
-  , selectChallenge
+  , selectFor
   ) where
 
 import qualified ByteString.StrictBuilder as ByteString
 import           Control.Monad
+import qualified Crypto.Hash as Cryptonite
 import qualified Crypto.Number.Serialize as Cryptonite
 import           Crypto.Random
+import qualified Data.ByteArray as ByteArray
 import qualified Data.ByteArray.Parse as Parse
 import           Data.ByteString (ByteString)
 import           Data.List (foldl', sort)
 import           Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
+import           Data.Maybe (mapMaybe)
 import           Data.Monoid
 import           Data.Proxy
+import           Data.Traversable
 import qualified Pedersen
 
 import           Crypto.ZKBoo.Util
@@ -65,9 +96,9 @@ data Expr f =
 --
 -- * All output gates are either an input or have an explicit assignment.
 data Circuit f = Circuit
-  { inputs :: [GateId]
-  , outputs :: [GateId]
-  , assignments :: [(GateId, Expr f)]
+  { circuitInputs :: [GateId]
+  , circuitOutputs :: [GateId]
+  , circuitGates :: [(GateId, Expr f)]
   } deriving (Show)
 
 -- | A view consists of a mapping from 'GateId's to values in the
@@ -147,8 +178,8 @@ outputForView is w = map (w !) is
 
 -- | Given a list of output gates and the final views, return the
 -- corresponding output values.
-output :: Num f => [GateId] -> (View f gen, View f gen, View f gen) -> [f]
-output os (w0, w1, w2) =
+calculateOutput :: Num f => [GateId] -> (View f gen, View f gen, View f gen) -> [f]
+calculateOutput os (w0, w1, w2) =
   let o0 = outputForView os w0
       o1 = outputForView os w1
       o2 = outputForView os w2
@@ -162,20 +193,20 @@ decomposeEval circuit inputValues (g0, g1, g2) =
   let (i0, g0') = withDRG g0 randomInputs
       (i1, g1') = withDRG g1 randomInputs
       i2 = zipWith3 (\x y z -> x - y - z) inputValues i0 i1
-      v0 = View (Map.fromList (zip (inputs circuit) i0)) [] g0'
-      v1 = View (Map.fromList (zip (inputs circuit) i1)) [] g1'
-      v2 = View (Map.fromList (zip (inputs circuit) i2)) [] g2
-  in evalGates (assignments circuit) (v0, v1, v2)
+      v0 = View (Map.fromList (zip (circuitInputs circuit) i0)) [] g0'
+      v1 = View (Map.fromList (zip (circuitInputs circuit) i1)) [] g1'
+      v2 = View (Map.fromList (zip (circuitInputs circuit) i2)) [] g2
+  in evalGates (circuitGates circuit) (v0, v1, v2)
   where randomInputs :: (MonadRandom m, RandomElement f) => m [f]
-        randomInputs = replicateM (length (inputs circuit)) randomElement
+        randomInputs = replicateM (length (circuitInputs circuit)) randomElement
 
 -- | A simple evaluation function of a circuit. This is mainly
 -- intended for testing purposes.
 eval :: Num f => Circuit f -> [f] -> [f]
 eval circuit inputValues =
-  let m = Map.fromList (zip (inputs circuit) inputValues)
-      mFinal = foldl' step' m (assignments circuit)
-  in map (\g -> mFinal Map.! g) (outputs circuit)
+  let m = Map.fromList (zip (circuitInputs circuit) inputValues)
+      mFinal = foldl' step' m (circuitGates circuit)
+  in map (\g -> mFinal Map.! g) (circuitOutputs circuit)
   where step' :: Num f => Map GateId f -> (GateId, Expr f) -> Map GateId f
         step' m' (i, g) = case g of
           AddConst a alpha  -> Map.insert i (m' Map.! a + alpha)      m'
@@ -209,7 +240,7 @@ commitView params circuit view = do
   pure (ViewCommitment y com, rev)
   where
     serializedView = ByteString.builderBytes (serializeView view)
-    y = map (view !) (outputs circuit)
+    y = map (view !) (circuitOutputs circuit)
 
 commit :: (MonadRandom m, ToBytes f)
        => Pedersen.CommitParams -> Circuit f -> (View f gen, View f gen, View f gen)
@@ -219,6 +250,77 @@ commit params circuit (w0, w1, w2) = do
   (c1, r1) <- commitView params circuit w1
   (c2, r2) <- commitView params circuit w2
   pure (Commitment c0 c1 c2 params, (r0, r1, r2))
+
+-- | A proof that the prover knows an input for the given circuit such
+-- that it produces the included output.
+data Proof f = Proof
+  { proofCircuit :: Circuit f -- ^ The circuit that forms the base of this proof.
+  , proofOutput :: [f] -- ^ The output that the proof should be for.
+  , proofCommitments :: [Commitment f] -- ^ A list of commitments, one for each round.
+  , proofRevealments :: [(Pedersen.Reveal, Pedersen.Reveal)] -- ^ The revealed views for each round.
+  }
+
+-- | The number of rounds used in the proof. Increasing this reduces
+-- the soundness error at the cost of increasing proof size as well as
+-- proof generation and verification time.
+newtype Rounds = Rounds Word
+  deriving (Eq, Show)
+
+serializeCommitment :: ToBytes f => Commitment f -> ByteString.Builder
+serializeCommitment (Commitment c0 c1 c2 _) =
+  foldMap viewCommitment [c0, c1, c2]
+  where viewCommitment :: ToBytes f => ViewCommitment f -> ByteString.Builder
+        viewCommitment (ViewCommitment y c) =
+          foldMap toBytesBuilder y <> ByteString.bytes (Cryptonite.i2osp (Pedersen.unCommitment c))
+
+-- | Return an infinite number of challenges based on the hash of the list of commitments.
+getChallenges :: ToBytes f => [Commitment f] -> [Challenge]
+getChallenges cs =
+  concatMap
+    (\i ->
+       let bs = ByteString.builderBytes (ByteString.bytes (Cryptonite.i2osp i) <> bsBuilder)
+       in challengesInHash (Cryptonite.hash bs))
+    [0 ..]
+  where
+    bsBuilder = foldMap serializeCommitment cs
+    wordToChallenge w =
+      case w of
+        0 -> Just One
+        1 -> Just Two
+        2 -> Just Three
+        _ -> Nothing
+    challengesInHash :: Cryptonite.Digest Cryptonite.SHA256 -> [Challenge]
+    challengesInHash digest =
+      mapMaybe wordToChallenge bytes
+      where
+        bytes =
+              concatMap
+                (\w -> let (a,b,c,d) = word8To2bitChunks w in [a,b,c,d])
+                (ByteArray.unpack digest)
+
+-- | @prove circuit inputs@ generates a proof that the prover knows
+-- inputs to produce a specific output.
+prove :: (MonadRandom m, Num f, RandomElement f, ToBytes f) => Rounds -> Circuit f -> [f] -> m (Proof f)
+prove (Rounds n) circuit inputs = do
+  (_, params) <- Pedersen.setup (max 6 (serializedViewLength circuit))
+  (commitments, revealments) <-
+    unzip <$> (for [1 .. n] $ \_ -> do
+      g0 <- drgNew
+      g1 <- drgNew
+      g2 <- drgNew
+      let views = (decomposeEval circuit inputs (g0, g1, g2))
+      commit params circuit views)
+  let selectedRevealments = zipWith selectFor revealments (getChallenges commitments)
+  pure (Proof circuit output commitments selectedRevealments)
+  where output = eval circuit inputs
+
+-- | Verify that the proof is correct.
+verify :: (Eq f, FromBytes f, Num f, RandomElement f, ToBytes f) => Proof f -> VerificationResult
+verify (Proof circuit output commitments revealments)
+  | all (== Success) (zipWith3 (verifyRound circuit output) commitments challenges revealments) = Success
+  | otherwise = Failure "Could not verify proof." -- TODO: produce a better error message
+  where challenges = getChallenges commitments
+
 
 -- | Serialize a view into a 'ByteString.Builder'.
 serializeView :: ToBytes f => View f gen -> ByteString.Builder
@@ -273,24 +375,28 @@ serializedViewLength (Circuit is _ gs) =
               _ -> False)
            (map snd gs))
 
+-- | For challenge i, view i and i + 1 are revealed.
 data Challenge
   = One
   | Two
   | Three
   deriving (Eq, Show)
 
+-- | The result of a verification attempt.
 data VerificationResult
   = Success
   | Failure String
   deriving (Eq, Show)
 
-commitments :: Commitment f -> Challenge -> (ViewCommitment f, ViewCommitment f)
-commitments (Commitment c0 c1 c2 _) e =
+-- | Select the commitments corresponding to the views that are revealed by the challenge.
+commitmentsFor :: Commitment f -> Challenge -> (ViewCommitment f, ViewCommitment f)
+commitmentsFor (Commitment c0 c1 c2 _) e =
   case e of
     One -> (c0, c1)
     Two -> (c1, c2)
     Three -> (c2, c0)
 
+-- | Check if the given views are consistent for the circuit.
 consistent :: forall f. (Eq f, Num f) => Circuit f -> View f () -> View f () -> Bool
 consistent (Circuit _ _ gates) wi wi1 =
   go gates (reverse (randomTape wi)) (reverse (randomTape wi1))
@@ -318,23 +424,29 @@ consistent (Circuit _ _ gates) wi wi1 =
           in wi ! i == vi && go gs tapei tapei1
         go ((_, Mult _ _) : _) _ _ = False
 
-verify :: (Eq f, FromBytes f, Num f, ToBytes f)
+-- | Verify a commitment. This entails checking the following properties:
+--
+-- * The result contained within the commitments matches the expected result.
+-- * The commitments match the revealed views.
+-- * The revealed views have the same output that is contained within the commitments.
+-- * The revealed views are consistent.
+verifyRound :: (Eq f, FromBytes f, Num f, ToBytes f)
        => Circuit f -> [f] -> Commitment f -> Challenge -> (Pedersen.Reveal, Pedersen.Reveal) -> VerificationResult
-verify circuit y cs e (ri, ri1)
+verifyRound circuit y cs e (ri, ri1)
   | commitmentResult cs /= y = Failure "Result does not match expected result."
   | not (Pedersen.open params ci ri && Pedersen.open params ci1 ri1) = Failure "Commitments are incorrect."
   | not (consistent circuit wi wi1) = Failure "Revealed views are not consistent"
-  | not (outputForView (outputs circuit) wi == yi &&
-         outputForView (outputs circuit) wi1 == yi1) = Failure "Commited views have different outputs"
+  | not (outputForView (circuitOutputs circuit) wi == yi &&
+         outputForView (circuitOutputs circuit) wi1 == yi1) = Failure "Commited views have different outputs"
   | otherwise = Success
-  where (ViewCommitment yi ci, ViewCommitment yi1 ci1) = commitments cs e
+  where (ViewCommitment yi ci, ViewCommitment yi1 ci1) = commitmentsFor cs e
         params = commitmentParams cs
         Parse.ParseOK _ wi = deserializeView circuit (Pedersen.revealVal ri)
         Parse.ParseOK _ wi1 = deserializeView circuit (Pedersen.revealVal ri1)
 
--- | Select the elements corresponding to the challenge.
-selectChallenge :: (a, a, a) -> Challenge -> (a, a)
-selectChallenge (a, b, c) e =
+-- | Select the elements for a given challenge.
+selectFor :: (a, a, a) -> Challenge -> (a, a)
+selectFor (a, b, c) e =
   case e of
     One -> (a, b)
     Two -> (b, c)
