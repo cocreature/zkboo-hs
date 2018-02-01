@@ -11,7 +11,7 @@ Maintainer  : moritz.kiefer@purelyfunctional.org
 
 This module provides a Haskell implementation of the
 <https://eprint.iacr.org/2016/163.pdf ZKBoo> NIZK protocol.  ZKBoo
-generates non-interactive zero-knowledge proofs for circuits
+generates non-interactive zero-knowledge arguments for circuits
 consisting of addition and multiplication. A special case of this are
 circuits over \(\mathbb{Z}_{2}\), i.e., boolean circuits.
 

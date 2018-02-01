@@ -3,11 +3,11 @@
 [![Build Status](https://img.shields.io/travis/cocreature/zkboo-hs.svg)](https://travis-ci.org/cocreature/zkboo-hs)
 
 A Haskell implementation of the [ZKBoo protocol](https://eprint.iacr.org/2016/163.pdf)
-for non-interactive zero-knowledge proofs of boolean circuits.
+for non-interactive zero-knowledge arguments of boolean circuits.
 
 ## Overview of the protocol
 
-ZKBoo generates non-interactive zero-knowledge proofs for circuits
+ZKBoo generates non-interactive zero-knowledge arguments for circuits
 consisting of addition and multiplication. A special case of this are
 circuits over ℤ₂, i.e., boolean circuits.
 
